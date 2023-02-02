@@ -9,14 +9,18 @@ const DEFAULT_FILTER_CUTOFF = 0.001; // 1Hz. time period in milliseconds
 const DEFAULT_FILTER_BETA = 1;
 
 class Controller {
-  constructor({onUpdate=null, filterMinCF=null, filterBeta=null}) {
+  constructor({onUpdate = null, filterMinCF = null, filterBeta = null, isWebcamFacingUser = false}) {
     this.customFaceGeometries = [];
     this.estimator = null;
     this.lastEstimateResult = null;
-    this.filterMinCF = filterMinCF === null? DEFAULT_FILTER_CUTOFF: filterMinCF;
-    this.filterBeta = filterBeta === null? DEFAULT_FILTER_BETA: filterBeta;
+    this.filterMinCF = filterMinCF === null ? DEFAULT_FILTER_CUTOFF : filterMinCF;
+    this.filterBeta = filterBeta === null ? DEFAULT_FILTER_BETA : filterBeta;
     this.onUpdate = onUpdate;
-
+    this.isWebcamFacingUser = isWebcamFacingUser;
+    if (this.isWebcamFacingUser) {
+      this.canvas = document.createElement('canvas');
+      this.context = this.canvas.getContext('2d');
+    }
     //console.log("filter", this.filterMinCF, this.filterBeta);
 
     this.landmarkFilters = [];
@@ -29,7 +33,10 @@ class Controller {
 
   async setup(input) {
     await waitCV();
-
+    if (this.isWebcamFacingUser) {
+      this.canvas.width = input.videoWidth;
+      this.canvas.height = input.videoHeight;
+    }
     this.faceMeshHelper = new FaceMeshHelper();
     this.estimator = new Estimator(input);
   }
@@ -42,9 +49,22 @@ class Controller {
       far: this.estimator.far
     }
   }
-  
+
+  copyImage(input){
+    this.context.save();
+    this.context.scale(-1, 1);
+    this.context.translate(-this.canvas.width, 0);
+    this.context.drawImage(input, 0, 0, this.canvas.width, this.canvas.height);
+    this.context.restore();
+  }
+
   async dummyRun(input) {
-    await this.faceMeshHelper.detect(input);
+    if (this.isWebcamFacingUser) {
+      this.copyImage(input);
+      await this.faceMeshHelper.detect(this.canvas);
+    } else {
+      await this.faceMeshHelper.detect(input);
+    }
   }
 
   processVideo(input) {
@@ -53,57 +73,64 @@ class Controller {
     this.processingVideo = true;
 
     const doProcess = async () => {
-      const results = await this.faceMeshHelper.detect(input);
-      if (results.multiFaceLandmarks.length === 0) {
-	this.lastEstimateResult = null;
-	this.onUpdate({hasFace: false});
-
-	for (let i = 0; i < this.landmarkFilters.length; i++) {
-	  this.landmarkFilters[i].reset();
-	}
-	this.faceMatrixFilter.reset();
-	this.faceScaleFilter.reset();
+      let results;
+      if (this.isWebcamFacingUser) {
+        this.copyImage(input);
+        results = await this.faceMeshHelper.detect(this.canvas);
       } else {
-	const landmarks = results.multiFaceLandmarks[0].map((l) => {
-	  return [l.x, l.y, l.z];
-	});
-	const estimateResult = this.estimator.estimate(landmarks);
+        results = await this.faceMeshHelper.detect(input);
+      }
 
-	if (this.lastEstimateResult === null) {
-	  this.lastEstimateResult = estimateResult;
-	} else {
-	  const lastMetricLandmarks = this.lastEstimateResult.metricLandmarks;
-	  const lastFaceMatrix = this.lastEstimateResult.faceMatrix;
-	  const lastFaceScale = this.lastEstimateResult.faceScale;
+      if (results.multiFaceLandmarks.length === 0) {
+        this.lastEstimateResult = null;
+        this.onUpdate({hasFace: false});
 
-	  const newMetricLandmarks = [];
-	  for (let i = 0; i < lastMetricLandmarks.length; i++) {
-	    newMetricLandmarks[i] = this.landmarkFilters[i].filter(Date.now(), estimateResult.metricLandmarks[i]);
-	  }
+        for (let i = 0; i < this.landmarkFilters.length; i++) {
+          this.landmarkFilters[i].reset();
+        }
+        this.faceMatrixFilter.reset();
+        this.faceScaleFilter.reset();
+      } else {
+        const landmarks = results.multiFaceLandmarks[0].map((l) => {
+          return [l.x, l.y, l.z];
+        });
+        const estimateResult = this.estimator.estimate(landmarks);
 
-	  const newFaceMatrix = this.faceMatrixFilter.filter(Date.now(), estimateResult.faceMatrix);
+        if (this.lastEstimateResult === null) {
+          this.lastEstimateResult = estimateResult;
+        } else {
+          const lastMetricLandmarks = this.lastEstimateResult.metricLandmarks;
+          const lastFaceMatrix = this.lastEstimateResult.faceMatrix;
+          const lastFaceScale = this.lastEstimateResult.faceScale;
 
-	  const newFaceScale = this.faceScaleFilter.filter(Date.now(), [estimateResult.faceScale]);
+          const newMetricLandmarks = [];
+          for (let i = 0; i < lastMetricLandmarks.length; i++) {
+            newMetricLandmarks[i] = this.landmarkFilters[i].filter(Date.now(), estimateResult.metricLandmarks[i]);
+          }
 
-	  this.lastEstimateResult = {
-	    metricLandmarks: newMetricLandmarks,
-	    faceMatrix: newFaceMatrix,
-	    faceScale: newFaceScale[0],
-	  }
-	}
+          const newFaceMatrix = this.faceMatrixFilter.filter(Date.now(), estimateResult.faceMatrix);
 
-	//console.log("resuts", results);
-	//console.log("estimateResult", estimateResult);
-	if (this.onUpdate) {
-	  this.onUpdate({hasFace: true, estimateResult: this.lastEstimateResult});
-	}
+          const newFaceScale = this.faceScaleFilter.filter(Date.now(), [estimateResult.faceScale]);
 
-	for (let i = 0; i < this.customFaceGeometries.length; i++) {
-	  this.customFaceGeometries[i].updatePositions(estimateResult.metricLandmarks);
-	}
+          this.lastEstimateResult = {
+            metricLandmarks: newMetricLandmarks,
+            faceMatrix: newFaceMatrix,
+            faceScale: newFaceScale[0],
+          }
+        }
+
+        //console.log("resuts", results);
+        //console.log("estimateResult", estimateResult);
+        if (this.onUpdate) {
+          this.onUpdate({hasFace: true, estimateResult: this.lastEstimateResult});
+        }
+
+        for (let i = 0; i < this.customFaceGeometries.length; i++) {
+          this.customFaceGeometries[i].updatePositions(estimateResult.metricLandmarks);
+        }
       }
       if (this.processingVideo) {
-	window.requestAnimationFrame(doProcess);
+        window.requestAnimationFrame(doProcess);
       }
     }
     window.requestAnimationFrame(doProcess);
@@ -143,5 +170,5 @@ class Controller {
 }
 
 module.exports = {
- Controller
+  Controller
 }

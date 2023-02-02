@@ -4,3 +4,4 @@ tests
 dist-dev
 dist/*.LICENSE.txt
 *.DS_Store
+.idea/

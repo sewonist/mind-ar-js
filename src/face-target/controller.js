@@ -17,11 +17,11 @@ class Controller {
     this.filterBeta = filterBeta === null ? DEFAULT_FILTER_BETA : filterBeta;
     this.onUpdate = onUpdate;
     this.isWebcamFacingUser = isWebcamFacingUser;
+    // 웹캠이 얼굴 방향인경우 화면 반전을 위한 캔버스 생성
     if (this.isWebcamFacingUser) {
       this.canvas = document.createElement('canvas');
       this.context = this.canvas.getContext('2d');
     }
-    //console.log("filter", this.filterMinCF, this.filterBeta);
 
     this.landmarkFilters = [];
     for (let i = 0; i < canonicalMetricLandmarks.length; i++) {
@@ -50,7 +50,7 @@ class Controller {
     }
   }
 
-  copyImage(input){
+  copyImage(input) {
     this.context.save();
     this.context.scale(-1, 1);
     this.context.translate(-this.canvas.width, 0);
@@ -81,9 +81,24 @@ class Controller {
         results = await this.faceMeshHelper.detect(input);
       }
 
+      console.log("%c face len: " + results.multiFaceLandmarks.length, "color: cyan")
+
       if (results.multiFaceLandmarks.length === 0) {
+
+        console.log("🚗 ... ");
+
         this.lastEstimateResult = null;
-        this.onUpdate({hasFace: false});
+        if (this.onUpdate) {
+          // estimateResult 값이 없으면 에러 발생 함
+          this.onUpdate({
+            hasFace: false,
+            estimateResult: {
+              metricLandmarks: null,
+              faceMatrix: null,
+              faceScale: null,
+            }
+          });
+        }
 
         for (let i = 0; i < this.landmarkFilters.length; i++) {
           this.landmarkFilters[i].reset();
@@ -91,49 +106,61 @@ class Controller {
         this.faceMatrixFilter.reset();
         this.faceScaleFilter.reset();
       } else {
+
         const landmarks = results.multiFaceLandmarks[0].map((l) => {
           return [l.x, l.y, l.z];
         });
         const estimateResult = this.estimator.estimate(landmarks);
 
-        if (this.lastEstimateResult === null) {
-          this.lastEstimateResult = estimateResult;
-        } else {
-          const lastMetricLandmarks = this.lastEstimateResult.metricLandmarks;
-          const lastFaceMatrix = this.lastEstimateResult.faceMatrix;
-          const lastFaceScale = this.lastEstimateResult.faceScale;
+        console.log(estimateResult)
 
-          const newMetricLandmarks = [];
-          for (let i = 0; i < lastMetricLandmarks.length; i++) {
-            newMetricLandmarks[i] = this.landmarkFilters[i].filter(Date.now(), estimateResult.metricLandmarks[i]);
+        if (estimateResult.faceMatrix) {
+
+          if (this.lastEstimateResult === null) {
+            this.lastEstimateResult = estimateResult;
+          } else {
+            const lastMetricLandmarks = this.lastEstimateResult.metricLandmarks;
+            const newMetricLandmarks = [];
+            for (let i = 0; i < lastMetricLandmarks.length; i++) {
+              newMetricLandmarks[i] = this.landmarkFilters[i].filter(Date.now(), estimateResult.metricLandmarks[i]);
+            }
+
+            const newFaceMatrix = this.faceMatrixFilter.filter(Date.now(), estimateResult.faceMatrix);
+            const newFaceScale = this.faceScaleFilter.filter(Date.now(), [estimateResult.faceScale]);
+            this.lastEstimateResult = {
+              metricLandmarks: newMetricLandmarks,
+              faceMatrix: newFaceMatrix,
+              faceScale: newFaceScale[0],
+            }
           }
 
-          const newFaceMatrix = this.faceMatrixFilter.filter(Date.now(), estimateResult.faceMatrix);
+          // faceMatrix 가 undefined 에러 발생 처리
+          if (this.onUpdate && this.lastEstimateResult.faceMatrix) {
+            this.onUpdate({hasFace: true, estimateResult: this.lastEstimateResult});
+          } else {
+            console.log(this.lastEstimateResult)
+          }
 
-          const newFaceScale = this.faceScaleFilter.filter(Date.now(), [estimateResult.faceScale]);
-
-          this.lastEstimateResult = {
-            metricLandmarks: newMetricLandmarks,
-            faceMatrix: newFaceMatrix,
-            faceScale: newFaceScale[0],
+          for (let i = 0; i < this.customFaceGeometries.length; i++) {
+            this.customFaceGeometries[i].updatePositions(estimateResult.metricLandmarks);
           }
         }
 
-        //console.log("resuts", results);
-        //console.log("estimateResult", estimateResult);
-        if (this.onUpdate) {
-          this.onUpdate({hasFace: true, estimateResult: this.lastEstimateResult});
-        }
 
-        for (let i = 0; i < this.customFaceGeometries.length; i++) {
-          this.customFaceGeometries[i].updatePositions(estimateResult.metricLandmarks);
-        }
       }
       if (this.processingVideo) {
-        window.requestAnimationFrame(doProcess);
+        try {
+          window.requestAnimationFrame(doProcess);
+        } catch (e) {
+          console.log("%c " + e, "color: red")
+        }
       }
     }
-    window.requestAnimationFrame(doProcess);
+    try {
+      window.requestAnimationFrame(doProcess);
+    } catch (e) {
+      console.log("%c " + e, "color: red")
+    }
   }
 
   stopProcessVideo() {
@@ -149,13 +176,6 @@ class Controller {
   getLandmarkMatrix(landmarkIndex) {
     const {metricLandmarks, faceMatrix, faceScale} = this.lastEstimateResult;
 
-    // final matrix = faceMatrix x landmarkMatrix
-    // landmarkMatrix = [
-    //   faceScale, 0, 0, metricLandmarks[landmarkIndex][0],
-    //   0, faceScale, 0, metricLandmarks[landmarkIndex][1],
-    //   0, 0, faceScale, metricLandmarks[landmarkIndex][2],
-    //   0, 0, 0, 1
-    // ]
     const fm = faceMatrix;
     const s = faceScale;
     const t = [metricLandmarks[landmarkIndex][0], metricLandmarks[landmarkIndex][1], metricLandmarks[landmarkIndex][2]];
